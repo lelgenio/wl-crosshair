@@ -2,8 +2,7 @@ use std::{fs::File, io::Write, os::unix::prelude::AsRawFd};
 
 use wayland_client::{
     protocol::{
-        wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm,
-        wl_shm_pool, wl_surface,
+        wl_buffer, wl_compositor, wl_keyboard, wl_region::WlRegion, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface
     },
     Connection, Dispatch, Proxy, QueueHandle,
 };
@@ -26,7 +25,6 @@ struct State {
     layer_surface: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     buffer: Option<wl_buffer::WlBuffer>,
     wm_base: Option<xdg_wm_base::XdgWmBase>,
-    pointer: Option<wl_pointer::WlPointer>,
 }
 
 fn main() {
@@ -47,7 +45,6 @@ fn main() {
         layer_surface: None,
         buffer: None,
         wm_base: None,
-        pointer: None,
     };
 
     event_queue.blocking_dispatch(&mut state).unwrap();
@@ -109,9 +106,6 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     (),
                 );
                 state.buffer = Some(buffer);
-            } else if interface == wl_seat::WlSeat::interface().name {
-                let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, version, qh, ());
-                state.pointer = Some(seat.get_pointer(qh, ()));
             } else if interface == xdg_wm_base::XdgWmBase::interface().name {
                 let wm_base = registry.bind::<xdg_wm_base::XdgWmBase, _, _>(name, 1, qh, ());
                 state.wm_base = Some(wm_base);
@@ -120,31 +114,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
     }
 }
 
-impl Dispatch<wl_pointer::WlPointer, ()> for State {
+impl Dispatch<WlRegion, ()> for State {
     fn event(
-        state: &mut Self,
-        _: &wl_pointer::WlPointer,
-        event: wl_pointer::Event,
+        _: &mut Self,
+        _: &WlRegion,
+        _: <WlRegion as Proxy>::Event,
         _: &(),
         _: &Connection,
-        qh: &QueueHandle<Self>,
+        _: &QueueHandle<Self>,
     ) {
-        eprintln!("WlPointer event {event:#?}");
-        match event {
-            wl_pointer::Event::Enter { .. } => {
-                if let Some(surface) = &state.base_surface {
-                    surface.destroy();
-                }
-                state.base_surface = None;
-            }
-            wl_pointer::Event::Leave { .. } => {
-                let surface = state.compositor.as_ref().unwrap().create_surface(qh, ());
-                state.base_surface = Some(surface);
-
-                state.init_layer_surface(qh);
-            }
-            _ => {}
-        }
     }
 }
 
@@ -197,6 +175,11 @@ impl State {
         // A negative value means we will be centered on the screen
         // independently of any other xdg_layer_shell
         layer.set_exclusive_zone(-1);
+        // Set empty input region to allow clicking through the window.
+        if let Some(compositor) = &self.compositor {
+            let region = compositor.create_region(qh, ());
+            self.base_surface.as_ref().unwrap().set_input_region(Some(&region));
+        }
         self.base_surface.as_ref().unwrap().commit();
 
         self.layer_surface = Some(layer);
