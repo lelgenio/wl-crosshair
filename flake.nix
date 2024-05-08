@@ -19,6 +19,13 @@
             version = "0.1.0";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
+            nativeBuildInputs = with pkgs; [ makeWrapper ];
+            postInstall = ''
+              mkdir -p $out/share
+              cp -rv ${./cursors} $out/share/cursors
+              wrapProgram $out/bin/* \
+                --set WL_CROSSHAIR_IMAGE_PATH $out/share/cursors/inverse-v.png
+            '';
           };
         };
 

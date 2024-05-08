@@ -1,8 +1,10 @@
 use std::{fs::File, io::Write, os::unix::prelude::AsRawFd};
 
+use image::{GenericImageView, Pixel};
 use wayland_client::{
     protocol::{
-        wl_buffer, wl_compositor, wl_keyboard, wl_region::WlRegion, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface
+        wl_buffer, wl_compositor, wl_keyboard, wl_region::WlRegion, wl_registry, wl_seat, wl_shm,
+        wl_shm_pool, wl_surface,
     },
     Connection, Dispatch, Proxy, QueueHandle,
 };
@@ -17,7 +19,9 @@ use wayland_protocols::xdg::shell::client::xdg_wm_base;
 struct State {
     running: bool,
 
-    cursor_size: u32,
+    cursor_width: u32,
+    cursor_height: u32,
+    image_path: String,
 
     compositor: Option<wl_compositor::WlCompositor>,
     base_surface: Option<wl_surface::WlSurface>,
@@ -25,6 +29,30 @@ struct State {
     layer_surface: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     buffer: Option<wl_buffer::WlBuffer>,
     wm_base: Option<xdg_wm_base::XdgWmBase>,
+}
+
+fn get_cursor_image_path() -> String {
+    if let Some(p) = std::env::args().skip(1).next() {
+        return p;
+    }
+
+    if let Ok(p) = std::env::var("WL_CROSSHAIR_IMAGE_PATH") {
+        return p;
+    }
+
+    [
+        std::option_env!("WL_CROSSHAIR_IMAGE_PATH").map(String::from),
+        Some("cursors/inverse-v.png".to_string()),
+    ]
+      .into_iter()
+      .flatten()
+      .filter(|p|
+          std::fs::metadata(p)
+              .map(|m| m.is_file())
+              .unwrap_or(false)
+      )
+      .next()
+      .expect("Could not find a crosshair image, pass it as a cli argument or set WL_CROSSHAIR_IMAGE_PATH environment variable")
 }
 
 fn main() {
@@ -38,7 +66,9 @@ fn main() {
 
     let mut state = State {
         running: true,
-        cursor_size: 10,
+        cursor_width: 10,
+        cursor_height: 10,
+        image_path: get_cursor_image_path(),
         compositor: None,
         base_surface: None,
         layer_shell: None,
@@ -91,10 +121,11 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
             } else if interface == wl_shm::WlShm::interface().name {
                 let shm = registry.bind::<wl_shm::WlShm, _, _>(name, version, qh, ());
 
-                let (init_w, init_h) = (state.cursor_size, state.cursor_size);
-
                 let mut file = tempfile::tempfile().unwrap();
-                draw(&mut file, (init_w, init_h));
+                state.draw(&mut file);
+
+                let (init_w, init_h) = (state.cursor_width, state.cursor_height);
+
                 let pool = shm.create_pool(file.as_raw_fd(), (init_w * init_h * 4) as i32, qh, ());
                 let buffer = pool.create_buffer(
                     0,
@@ -126,38 +157,6 @@ impl Dispatch<WlRegion, ()> for State {
     }
 }
 
-fn draw(tmp: &mut File, (buf_x, buf_y): (u32, u32)) {
-    let mut buf = std::io::BufWriter::new(tmp);
-    for y in 0..buf_y {
-        for x in 0..buf_x {
-            let ix = x as i32;
-            let iy = y as i32;
-
-            let dist = if x <= (buf_x / 2) {
-                ix + iy - (buf_y as i32)
-            } else {
-                iy - ix
-            };
-
-            let a: u32 = match dist.abs() {
-                0 => 0xFF,
-                1 => 0x88,
-                _ => 0x00,
-            };
-
-            let c: u32 = match dist.abs() {
-                0 => 0xFF,
-                1 => 0x88,
-                _ => 0x00,
-            };
-
-            let color = (a << 24) + (c << 16) + (c << 8) + c;
-            buf.write_all(&color.to_ne_bytes()).unwrap();
-        }
-    }
-    buf.flush().unwrap();
-}
-
 impl State {
     fn init_layer_surface(&mut self, qh: &QueueHandle<State>) {
         let layer = self.layer_shell.as_ref().unwrap().get_layer_surface(
@@ -171,18 +170,43 @@ impl State {
         // Center the window
         layer.set_anchor(Anchor::Top | Anchor::Right | Anchor::Bottom | Anchor::Left);
         layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
-        layer.set_size(self.cursor_size, self.cursor_size);
+        layer.set_size(self.cursor_width, self.cursor_height);
         // A negative value means we will be centered on the screen
         // independently of any other xdg_layer_shell
         layer.set_exclusive_zone(-1);
         // Set empty input region to allow clicking through the window.
         if let Some(compositor) = &self.compositor {
             let region = compositor.create_region(qh, ());
-            self.base_surface.as_ref().unwrap().set_input_region(Some(&region));
+            self.base_surface
+                .as_ref()
+                .unwrap()
+                .set_input_region(Some(&region));
         }
         self.base_surface.as_ref().unwrap().commit();
 
         self.layer_surface = Some(layer);
+    }
+
+    fn draw(&mut self, tmp: &mut File) {
+        let mut buf = std::io::BufWriter::new(tmp);
+
+        let i = image::open(&self.image_path).unwrap();
+
+        self.cursor_width = i.width();
+        self.cursor_height = i.height();
+
+        for y in 0..self.cursor_height {
+            for x in 0..self.cursor_width {
+                let px = i.get_pixel(x, y).to_rgba();
+
+                let [r, g, b, a] = px.channels().try_into().unwrap();
+
+                let color = u32::from_be_bytes([a, r, g, b]);
+
+                buf.write_all(&color.to_le_bytes()).unwrap();
+            }
+        }
+        buf.flush().unwrap();
     }
 }
 
