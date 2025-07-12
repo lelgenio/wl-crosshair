@@ -1,5 +1,5 @@
 # wl-crosshair
-A crosshair overlay for wlroots compositors.
+A crosshair overlay for wlroots compositors (like sway).
 
 A extremely stripped down version of [crossover](https://github.com/lacymorrow/crossover).
 
