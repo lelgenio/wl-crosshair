@@ -199,9 +199,10 @@ impl State {
             for x in 0..self.cursor_width {
                 let px = i.get_pixel(x, y).to_rgba();
 
-                let [r, g, b, a] = px.channels().try_into().unwrap();
+                let [ur, ug, ub, ua] = px.channels().try_into().unwrap();
+                let (r, g, b, a) = (ur as f32, ug as f32, ub as f32, ua as f32 / u8::MAX as f32);
 
-                let color = u32::from_be_bytes([a, r, g, b]);
+                let color = u32::from_be_bytes([ua, (r * a).round() as u8, (g * a).round() as u8, (b * a).round() as u8]);
 
                 buf.write_all(&color.to_le_bytes()).unwrap();
             }
